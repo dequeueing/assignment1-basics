@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import multiprocessing
 import os
 from typing import IO, Any, BinaryIO, Dict, List, Tuple
 from collections.abc import Iterable
@@ -608,6 +609,38 @@ def find_chunk_boundaries(
     # Make sure all boundaries are unique, but might be fewer than desired_num_chunks
     return sorted(set(chunk_boundaries))
 
+def pretokenize(input_path, start, end, special_tokens):
+    # local data structures
+    pretoken_cnt: Dict[str, int] = defaultdict(int)
+    pretoken_bytes: Dict[str, list[bytes]] = defaultdict(list)
+    
+    with open(input_path, "rb") as f:
+        f.seek(start)
+        chunk = f.read(end - start).decode("utf-8", errors="ignore")
+        
+        # Remove special token
+        import re
+        escaped_tokens = [re.escape(token) for token in special_tokens]
+        special_tokens_pattern = '|'.join(escaped_tokens)
+        documents = re.split(special_tokens_pattern, chunk)
+        
+        # Pre-token each ducoment, init data sutrctures for merging
+        import regex as re
+        PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+        for document in documents:
+            pretokens = re.finditer(PAT, document)
+            for match in pretokens:
+                pretoken = match.group()
+                pretoken_cnt[pretoken] += 1  # count pretoken
+                byte_seq = pretoken.encode('utf-8')
+                if pretoken_cnt[pretoken] == 1:  # first time seeing this pretoken
+                    pretoken_bytes[pretoken] = []
+        
+                for i in range(len(byte_seq)):
+                    if pretoken_cnt[pretoken] == 1: # first time seeing this pretoken
+                        pretoken_bytes[pretoken].append(bytes([byte_seq[i]]))
+                        
+        return pretoken_cnt, pretoken_bytes
 
 
 def run_train_bpe(
@@ -652,245 +685,93 @@ def run_train_bpe(
         vocab[vocab_len] = sp_bytes
         vocab_len += 1
         
-    # Debug print the vocab
-    # for key in vocab.keys():
-    #     print(f"token id: {key}, token: {vocab[key]}")
-        
     with open(input_path, "rb") as f:
         num_processes = 4
         boundaries = find_chunk_boundaries(f, num_processes, b"<|endoftext|>")
         
-        # The following is a serial implementation, but you can parallelize this
-        # by sending each start/end pair to a set of processes.
+    # Prepare arguments for each process
+    arguments = []
+    for i in range(len(boundaries) - 1):
+        argument = (input_path, boundaries[i], boundaries[i + 1], special_tokens)
+        arguments.append(argument)
+    
+    # create multiple processes in a map-reduce manner
+    # step1: map to different process workers
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        list_of_results_tuples  = pool.starmap(pretokenize, arguments)
         
-        # data structure for mering 
-        # 1. byte_pair_cnt: {(b'T', b'h'): 2, ...}. Find the byte pair with highest count
-        # 2. pretoken_cnt: {'The': 2, 'That': 3}
-        # 3. pretoken_bytes: {'The': [b'T', b'h', b'e']}
-        # 4. bytes_pair_pretoken: {(b'T', b'h'): ['The', 'That']}
-        byte_pair_cnt: Dict[tuple[bytes, bytes], int] = defaultdict(int)
-        pretoken_cnt: Dict[str, int] = defaultdict(int)
-        pretoken_bytes: Dict[str, list[bytes]] = defaultdict(list)
-        bytes_pair_pretoken: Dict[tuple[bytes, bytes], list[str]] = defaultdict(list)
-        for start, end in zip(boundaries[:-1], boundaries[1:]):
-            f.seek(start)
-            chunk = f.read(end - start).decode("utf-8", errors="ignore")
-            # Run pre-tokenization on your chunk and store the counts for each pre-token
-            
-            # print(type(chunk)) # str
-            # print(chunk[:50])
-            
-            # Remove special token
-            import re
-            escaped_tokens = [re.escape(token) for token in special_tokens]
-            special_tokens_pattern = '|'.join(escaped_tokens)
-            documents = re.split(special_tokens_pattern, chunk)
-            # print(f"len first few result after removing: {len(result)}")  # each item in result is a document
-            # print(f"type few result after removing: {type(result[0])}")
-            # print(f"type few result after removing: {result[0]}")
-            
-            
-            # Pre-token each ducoment, init data sutrctures for merging
-            import regex as re
-            PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-            for document in documents:
-                # pretokenized_doc = re.findall(PAT, document)
-                # print(f"pre-token list (first 10): {pretokenized_doc[:10]}")
-                # for pretoken in pretokenized_doc:
-                #     # TODO: each pretoken to each byte-pair in it
-                #     pass
-                pretokens = re.finditer(PAT, document)
-                for match in pretokens:
-                    pretoken = match.group()
-                    pretoken_cnt[pretoken] += 1  # count pretoken
-                    byte_seq = pretoken.encode('utf-8')
-                    if pretoken_cnt[pretoken] == 1:  # first time seeing this pretoken
-                        pretoken_bytes[pretoken] = []
-            
-                    for i in range(len(byte_seq) - 1):
-                        first = bytes([byte_seq[i]])
-                        second = bytes([byte_seq[i+1]])
-                        byte_pair = (first, second)
-                        byte_pair_cnt[byte_pair] += 1
-                        if not bytes_pair_pretoken[byte_pair]:
-                            bytes_pair_pretoken[byte_pair] = []
+    # step2: combine all results
+    pretoken_cnt: Dict[str, int] = defaultdict(int)
+    pretoken_bytes: Dict[str, list[bytes]] = defaultdict(list)
+    for item in list_of_results_tuples:
+        local_pretoken_cnt = item[0]
+        local_pretoken_bytes = item[1]
+        
+        for pretoken in local_pretoken_cnt:
+            pretoken_cnt[pretoken] += local_pretoken_cnt[pretoken]
+        for pretoken in local_pretoken_bytes:
+            if pretoken not in pretoken_bytes:
+                pretoken_bytes[pretoken] = local_pretoken_bytes[pretoken]
+        
                         
-                        if pretoken_cnt[pretoken] == 1: # first time seeing this pretoken
-                            bytes_pair_pretoken[byte_pair].append(pretoken)
-                            pretoken_bytes[pretoken].append(bytes([byte_seq[i]]))
-                            if i == len(byte_seq) - 2:
-                                pretoken_bytes[pretoken].append(bytes([byte_seq[i+1]]))
-                    # print(f"pretoken: {pretoken}, byteseq: {byte_seq}, type of seq: {type(byte_seq)}")
-            
-            print(f"byte_pair_cnt: {byte_pair_cnt}")
-            print(f"pretoken_cnt: {pretoken_cnt}")
-            print(f"pretoken_bytes: {pretoken_bytes}")
-            print(f"bytes_pair_pretoken: {bytes_pair_pretoken}")
-            
-            # save pretoken cnt locally
-            import json
-            file_path = 'pretoken_cnt.txt'
-            with open(file_path, "w") as json_file:
-                json.dump(pretoken_cnt, json_file, indent=4)
+    while(len(vocab) < vocab_size):
+        # Test: merge for once using naive implementation
+        # pretoken_bytes: The byte sequence for each pretoken {'The': [b'T', b'h', b'e']} 
+        # pretoken_cnt: the emerging frequency of each pretoken {'The': 2, 'That': 3} 
+        
+        # step1: find the byte pair with highest frequency 
+        # step1.1: construct the dict of byte pair to its frequency 
+        byte_pair_cnt = defaultdict(int)   # frequency for each byte pair: {(b'T', b'h'): 3}
+        for pretoken in pretoken_cnt.keys():
+            bytes_sequence = pretoken_bytes[pretoken]  # byte sequence for the current pretoken
+            for i in range(len(bytes_sequence) - 1):   # iterate each byte in the sequence 
+                byte_pair = (bytes_sequence[i], bytes_sequence[i+1]) 
+                byte_pair_cnt[byte_pair] += pretoken_cnt[pretoken]
+        
+        # debug print
+        # print(f"byte_pair_cnt: {byte_pair_cnt}")
+        
+        # step1.2: select the byte pair with highest frequency
+        highest_cnt = max(byte_pair_cnt.values())
+        byte_pairs_with_highest_cnt = [key for key in byte_pair_cnt.keys() if byte_pair_cnt[key] == highest_cnt]
+        bytes_pair_to_merge = max(byte_pairs_with_highest_cnt)  # choose the pair with greatest lexicographical order
 
-            
-        # Test: merge for once
-        # one itertaion
-        # pretokens: ['the' 'that' 'these']
-        # init:
-        # pretoken_cnt: {'the': 2, 'that': 1, 'these':1}
-        # pretoken_bytes: {'the': [b't', b'h', b'e'], 'that': [b't', b'h', b'a', b't'}
-        # byte_pair_cnt: {(b't', b'h'): 2, (b'h', b'e'): 1, ...}
-        # byte_pair_pretoken: {(b't', b'h'): ['the', 'that', 'these'], ...}
         
-        # Find the most frequent byte pair: (b't', b'h')
-        # pretokens related to this byte pair:  ['the', 'that', 'these']
-        # update the bytes sequence of these tokens: 'the': [b'th', b'e']
-        # The byte pair that will be affected: (b'h', b'e') -> (b'th', b'e'), update the cnt of (b'h', b'e')
-        while(len(vocab) < vocab_size):
+        # step2: merge the byte pair into a single bytes
         
-            highest_cnt = max(byte_pair_cnt.values())
-            byte_pairs_with_highest_cnt = [key for key in byte_pair_cnt.keys() if byte_pair_cnt[key] == highest_cnt]
-            bytes_pair_to_merge = max(byte_pairs_with_highest_cnt)
-            merged_bytes = bytes_pair_to_merge[0] + bytes_pair_to_merge[1]
-            # print(f"bytes_pair_to_merge: {bytes_pair_to_merge}")
-            
-            # debug: compare [(b" t", b"he"), (b"r", b"e")]
-            p1 = (b"r", b"e")
-            p2 = (b" t", b"he")
-            if bytes_pair_to_merge == p1:
-                print(f'{p1} cnt = {byte_pair_cnt[p1]}')
-                print(f'{p2} cnt = {byte_pair_cnt[p2]}')
-            
-            # prepare new byte_pretoken mapping
-            bytes_pair_pretoken[merged_bytes] = []
-            
-            # Remove byte pair
-            # print(f"bytes_pair_to_merge: {bytes_pair_to_merge}")
-            byte_pair_cnt.pop(bytes_pair_to_merge)
-            
-            # update each token
-            pretokens_to_update = bytes_pair_pretoken[bytes_pair_to_merge]
-            # print(f"pretokens_to_update: {pretokens_to_update}")
-            for pretoken in pretokens_to_update:
-                sub_sequence = [bytes_pair_to_merge[0], bytes_pair_to_merge[1]]
-                    
-                bytes_sequence = pretoken_bytes[pretoken]
-                # print(f"bytes_sequence for {pretoken}: {bytes_sequence}")
-                # print(f"sub_sequence looking for: {sub_sequence}")
-                # print(f"sub_sequence to find: {sub_sequence}")
-                
-                # find the sub-sequence in the bytes_sequence
-                index_found = None
-                for i in range(len(bytes_sequence) - 1):
-                    seq1 = bytes_sequence[i:i+2]
-                    seq2 = sub_sequence
-                    # print(f"\nseq1: {seq1}")
-                    # print(f"seq2: {seq2}\n")
-                    if bytes_sequence[i:i+2] == sub_sequence:
-                        index_found = i
-                        break  # Found it, so we can stop
-                if index_found is None:
-                    print(f"!bytes_sequence for {pretoken}: {bytes_sequence}")
-                    print(f"!sub_sequence looking for: {sub_sequence}")
-                    raise Exception('subsequence not found in the complete bytes sequence')
-                
-                # Extract the four bytes to update 
-                starting_index = max(index_found -1, 0)
-                ending_index = index_found + 3
-                bytes_to_update = bytes_sequence[starting_index :ending_index]
-                
-                # expected: a new list of bytes
-                new_byte_pairs = []
-                new_byte_sequence = []
-                bytes_pair_pretoken[bytes_pair_to_merge].remove(pretoken) # remove byte_pretoken mapping
-                if len(bytes_to_update) == 4:
-                    pair1 = (bytes_to_update[0], bytes_to_update[1])
-                    pair2 = (bytes_to_update[2], bytes_to_update[3])
-                    # print(f"pair1: {pair1}, pair2: {pair2}")
-                    before = byte_pair_cnt[pair1]
-                    byte_pair_cnt[pair1] -= pretoken_cnt[pretoken]
-                    byte_pair_cnt[pair2] -= pretoken_cnt[pretoken]
-                    after = byte_pair_cnt[pair1]
-                    
-                    # debug print 
-                    # print(f"updating pretoken: {pretoken}, pair: {pair1}")
-                    # print(f"before decrementing: {before}, after: {after}")
-                    
-                    bytes_pair_pretoken[pair1].remove(pretoken)
-                    bytes_pair_pretoken[pair2].remove(pretoken)
-                    
-                    new_byte_pair1 = (bytes_to_update[0], merged_bytes)
-                    new_byte_pair2 = (merged_bytes, bytes_to_update[-1])
-                    new_byte_pairs.append(new_byte_pair1)
-                    new_byte_pairs.append(new_byte_pair2)
-                    
-                    new_byte_sequence.append(bytes_to_update[0])
-                    new_byte_sequence.append(merged_bytes)
-                    new_byte_sequence.append(bytes_to_update[-1])
-                elif len(bytes_to_update) == 3:
-                    pair1 = (bytes_to_update[0], bytes_to_update[1])
-                    pair2 = (bytes_to_update[1], bytes_to_update[2])
-                    assert(pair1 == bytes_pair_to_merge or pair2 == bytes_pair_to_merge)
-                    # print(f"pair1: {pair1}, pair2: {pair2}")
-                    if pair1 == bytes_pair_to_merge:
-                        byte_pair_cnt[pair2] -= pretoken_cnt[pretoken]
-                        if pretoken in bytes_pair_pretoken[pair2]:
-                            bytes_pair_pretoken[pair2].remove(pretoken)
-                        else:
-                            print(f"pair2: {pair2}")
-                            print(f"pretoken: {pretoken}")
-                            raise Exception('error removing pretoken from mappings')
-                        new_byte_pair = (merged_bytes, bytes_to_update[-1])
-                        new_byte_sequence.append(merged_bytes)
-                        new_byte_sequence.append(bytes_to_update[-1])
-                    else:
-                        byte_pair_cnt[pair1] -= pretoken_cnt[pretoken]
-                        bytes_pair_pretoken[pair1].remove(pretoken)
-                        new_byte_pair = (bytes_to_update[0], merged_bytes)
-                        new_byte_sequence.append(bytes_to_update[0])
-                        new_byte_sequence.append(merged_bytes)
-                    new_byte_pairs.append(new_byte_pair)
+        # bytes_pair_to_merge: (b'x', b'y')
+        # step2.1: construct the merged byte
+        merged_byte = bytes_pair_to_merge[0] + bytes_pair_to_merge[1] # the merged new bytes: b'xy'
+        
+        # step2.2: iterate all pretoken's byte sequence to update 
+        for pretoken in pretoken_cnt.keys():
+            byte_sequence = pretoken_bytes[pretoken] # current pretoken's byte sequence 
+            byte_cursor = 0 # keep track of the processing byte
+            new_byte_sequence = []  # byte sequence after merging 
+            found = False # flag whether the target byte pair found
+            while(byte_cursor < len(byte_sequence)):
+                if byte_cursor == len(byte_sequence) - 1:   # last byte cannot form pair 
+                    new_byte_sequence.append(byte_sequence[byte_cursor])
+                    break
                 else:
-                    if len(bytes_to_update) != 2:
-                        print(f"!len(bytes_to_update): {len(bytes_to_update)}")
-                        print(f"bytes_to_update: {bytes_to_update}")
-                        raise Exception('bytes_to_update having trouble!')
-                    
-                    new_byte_sequence.append(merged_bytes)
-                # print(f"new_byte_pairs: {new_byte_pairs}")
-                # print(f"new_byte_sequence: {new_byte_sequence}")
+                    processing_byte_pair = (byte_sequence[byte_cursor], byte_sequence[byte_cursor + 1])
+                    if processing_byte_pair == bytes_pair_to_merge:  # find a target byte pair
+                        byte_cursor += 2  # skip to the next next byte 
+                        found = True      # mark as found 
+                        new_byte_sequence.append(merged_byte)  # update the new byte sequence
+                    else: # not the target pair
+                        new_byte_sequence.append(byte_sequence[byte_cursor])
+                        byte_cursor += 1 # to the next byte
+            if found:
+                # update to new byte sequence if found target byte pair
+                pretoken_bytes[pretoken] = new_byte_sequence
                 
-                # increment new_byte_pairs
-                for byte_pair in new_byte_pairs:
-                    byte_pair_cnt[byte_pair] += pretoken_cnt[pretoken]
-                    bytes_pair_pretoken[byte_pair].append(pretoken)
-                    
-                
-                # replace pretoken's bytes
-                start_index = -1
-                for i in range(len(bytes_sequence) - len(bytes_to_update) + 1):
-                    if bytes_sequence[i : i + len(bytes_to_update)] == bytes_to_update:
-                        start_index = i
-                        break
-
-                # 2. Use slicing to replace the sub-sequence
-                if start_index != -1:
-                    end_index = start_index + len(bytes_to_update)
-                    bytes_sequence[start_index:end_index] = new_byte_sequence
-
-                # print(f"replaced bytes_sequence: {bytes_sequence}")
-                
-                
-            # Update vocabulary and merges
-            vocab[len(vocab)] = merged_bytes
-            merges.append(bytes_pair_to_merge)
-            # print(f"merges: {merges}")
-            # print(f"updated vocab:\n{vocab}")
-            # print(f"bytes_pair_to_merge: {bytes_pair_to_merge}")
-
-    return vocab, merges
-            
+        # step3: update vocab and merges 
+        vocab[len(vocab)] = merged_byte
+        merges.append(bytes_pair_to_merge)
+                        
+    return vocab, merges            
+        
             
             
             
