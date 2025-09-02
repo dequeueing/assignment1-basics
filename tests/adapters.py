@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-import multiprocessing
 import os
 from typing import IO, Any, BinaryIO, Dict, List, Tuple
 from collections.abc import Iterable
@@ -561,7 +560,9 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    from .tokenizer import Tokenizer
+    return Tokenizer(vocab, merges, special_tokens)
+    
 
 def find_chunk_boundaries(
     file: BinaryIO,
@@ -776,12 +777,25 @@ def run_train_bpe(
             
             
 if __name__ == '__main__':
-    input_path = "/home/exouser/cs336/assignment1-basics/tests/adatper_main.txt"
+    import multiprocessing
+    # input_path = "/home/exouser/cs336/assignment1-basics/tests/adatper_main.txt"
+    input_path = "/home/exouser/cs336/assignment1-basics/data/TinyStoriesV2-GPT4-train.txt"
+    print(f"Training starts")
+    
+    import time
+    time1 = time.time()
     vocab, merges  = run_train_bpe(
         input_path=input_path,
-        vocab_size=260,
+        vocab_size=10000,
         special_tokens=["<|endoftext|>"],
     )
+    time2 = time.time()
+    print(f"Training ends, time used: {time2 - time1} seconds")
+    
     print('==================================')
-    print(vocab)
-    print(merges)
+    print(f"Serialize vocabulary and merges")
+    import pickle
+    with open("vocab1.pkl", "wb") as f:
+        pickle.dump(vocab, f)
+    with open("merges1.pkl", "wb") as f:
+        pickle.dump(merges, f)  
