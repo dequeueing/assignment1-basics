@@ -14,8 +14,13 @@ class Tokenizer:
         """
         self.vocab = vocab
         self.merges = merges
-        self.special_tokens = special_tokens
-    
+        # self.special_tokens = sorted(special_tokens, key=len, reverse=True) if special_tokens else []
+        
+        if special_tokens:
+            self.special_tokens = sorted(special_tokens, key=len, reverse=True)
+        else:
+            self.special_tokens = []
+                
     def from_files(cls, vocab_filepath, merges_filepath, special_tokens=None):
         """Construct and return a Tokenizer from a serialized vocabulary and a list of merges.
 
@@ -158,7 +163,7 @@ class Tokenizer:
                             break
                         
                     # add the token id to the sequence
-                    if not token_id:
+                    if token_id is None:
                         raise Exception(f"Could not find token id for byteseq {byte_seq} in the vocabulary")
                     token_id_sequence_for_pretoken.append(token_id)
                 chunk_id_sequence.append(token_id_sequence_for_pretoken)
@@ -178,13 +183,19 @@ class Tokenizer:
         Given an interable of strings, return a generator that lazily yields token IDs. 
         This is required for memory-efficient tokenization of large files that cannot be directly loaded into memory. 
         """
-        pass
+        for item in iterable:
+            for id in self.encode(item):
+                yield id
     
     def decode(self, ids:list[int])-> str:
         """
         Decode a sequence of token IDs into text.
         """
-        pass
-
-    
+        vocab = self.vocab  # int -> bytes mapping
+        final_bytes = bytes()
+        for id in ids:
+            bytes_for_id = vocab[id]
+            final_bytes += bytes_for_id
+        return final_bytes.decode('utf-8', errors='replace')
+            
     
