@@ -36,3 +36,27 @@ class Embedding(torch.nn.Module):
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         indices = torch.LongTensor(token_ids)
         return self.weight[indices]
+
+class RMSNorm(torch.nn.Module):
+    def __init__(self, d_model: int, eps: float = 1e-5, device=None, dtype=None):
+        super().__init__()
+        
+        self.gain = torch.nn.Parameter(torch.randn(d_model,device=device,dtype=dtype))
+        self.eps = eps
+        self.d_model = d_model
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # upcast to avoid overflow
+        in_dtype = x.dtype
+        x = x.to(torch.float32)
+        
+        # perform RMSNorm
+        square_divided = torch.einsum("...d,...d->...", x, x) / self.d_model
+        rms_a = torch.sqrt(square_divided + self.eps)
+        
+        
+        result = torch.einsum("...d,...->...d", x, 1/rms_a)
+        result = torch.einsum("...d,d->...d", result, self.gain)
+        
+        # downcast to get back
+        return result.to(in_dtype)
