@@ -60,3 +60,38 @@ class RMSNorm(torch.nn.Module):
         
         # downcast to get back
         return result.to(in_dtype)
+    
+    
+class SiLU(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        sigmoid = torch.nn.functional.sigmoid(x)
+        return torch.einsum("...d,...d->...d", sigmoid, x)
+    
+    
+class SwiGLU(torch.nn.Module):
+    def __init__(self, d_model:int, d_ff:int, device=None, dtype=None):
+        """SwiGLU feed-forward network, comprising of a SiLU activation function and a GLU.
+
+        Args:
+            d_model (int): dimension of input
+            d_ff (int): dimension of weight
+        """
+        super().__init__()
+        self.d_model = d_model
+        self.d_ff = d_ff
+        self.silu = SiLU()
+        
+        self.w1 = torch.nn.Parameter(torch.randn(d_ff,d_model,device=device,dtype=dtype))
+        self.w2 = torch.nn.Parameter(torch.randn(d_model,d_ff,device=device,dtype=dtype))
+        self.w3 = torch.nn.Parameter(torch.randn(d_ff,d_model,device=device,dtype=dtype))
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        w1x = torch.einsum("fm,...m->...f", self.w1,x)
+        silu_w1z = self.silu(w1x)
+        w3x = torch.einsum("fm,...m->...f", self.w3,x)
+        elementwise = torch.einsum("...f,...f->...f", silu_w1z, w3x)
+        return torch.einsum("mf,...f->...m",self.w2, elementwise)
+        
