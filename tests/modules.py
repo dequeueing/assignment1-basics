@@ -177,3 +177,41 @@ class Softmax(torch.nn.Module):
         
         return x / exp_sum
         
+        
+class Attention(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.softmax = Softmax()
+        
+    def forward(self, Q:torch.Tensor, K:torch.Tensor, V:torch.Tensor, mask:torch.Tensor):
+        """
+        Given key (K), query (Q), and value (V) tensors, return
+        the output of your scaled dot product attention implementation.
+
+        Args:
+            Q (Float[Tensor, " ... queries d_k"]): Query tensor
+            K (Float[Tensor, " ... keys d_k"]): Key tensor
+            V (Float[Tensor, " ... values d_v"]): Values tensor
+            mask (Float[Tensor, " ... queries keys"] | None): Mask tensor
+        Returns:
+            Float[Tensor, " ... queries d_v"]: Output of SDPA
+        """
+        # Q @ K / sqrt(dk)
+        dk = torch.tensor(Q.shape[-1])
+        QK = torch.einsum("... q d, ... k d -> ... q k", Q, K) / torch.sqrt(dk)
+        
+        # add mask 
+        if mask is not None:
+            QK = QK.masked_fill(mask == False, float('-inf'))
+        
+        # softmax 
+        sfm_QK = self.softmax(QK, dim=-1)
+        
+        print("\nsfm size: ", sfm_QK.shape
+              , "\nV size: ", V.shape)
+        
+        # multiply V
+        return torch.einsum("... a l, ... l v->...av", sfm_QK, V)
+        
+    
+    
