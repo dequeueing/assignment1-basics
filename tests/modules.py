@@ -212,6 +212,60 @@ class Attention(torch.nn.Module):
         
         # multiply V
         return torch.einsum("... a l, ... l v->...av", sfm_QK, V)
+
+class MultiheadAttention(torch.nn.Module):
+    def __init__(self,d_model, num_heads, theta=None, device=None, dtype=None):
+        super().__init__()
+        self.d_model = d_model
+        self.theta = theta
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
         
-    
-    
+        self.q_proj = torch.nn.Parameter(torch.randn(d_model,d_model,device=device,dtype=dtype))
+        self.k_proj = torch.nn.Parameter(torch.randn(d_model,d_model,device=device,dtype=dtype))
+        self.v_proj = torch.nn.Parameter(torch.randn(d_model,d_model,device=device,dtype=dtype))
+        self.o_proj = torch.nn.Parameter(torch.randn(d_model,d_model,device=device,dtype=dtype))
+        
+        self.attention = Attention()
+        
+        
+    def forward(self, x:torch.Tensor): 
+        # get sequence length from x 
+        seq_len = x.shape[-2]
+        
+        # x shape: sequence_length, d_model
+        # q/k/v shape: ...  d_model
+        # q = torch.einsum("... d, d v->...v", x, self.q_proj)
+        # k = torch.einsum("... d, d v->...v", x, self.k_proj)
+        # v = torch.einsum("... d, d v->...v", x, self.v_proj)
+        
+        # fix: pay attention to the order of dimension, different!
+        q = torch.einsum("... s d, v d -> ... s v", x, self.q_proj)
+        k = torch.einsum("... s d, v d -> ... s v", x, self.k_proj)
+        v = torch.einsum("... s d, v d -> ... s v", x, self.v_proj)
+        
+        # rearrange into multihead 
+        # ...  d_model -> ... num_head, d_head        
+        q = rearrange(q, "... s (h d) -> ... h s d", h=self.num_heads)
+        k = rearrange(k, "... s (h d) -> ... h s d", h=self.num_heads)
+        v = rearrange(v, "... s (h d) -> ... h s d", h=self.num_heads)
+        
+        # apply rope if not none
+        if self.theta:
+            # TODO: apply rope
+            pass
+        
+        # get the causal mask 
+        causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device)).bool()
+        
+        # apply attention 
+        out = self.attention(q,k,v,causal_mask)  # shape: ... num_haed seq_len dimension
+        
+        # rearrange to cancel head, result shape: ... seq_len d_model
+        out = rearrange(out, "... h s d -> ... s (h d)", h=self.num_heads) 
+        
+        # linear proj
+        # return torch.einsum("...s d, d l->...s l",out,self.o_proj)
+        return torch.einsum("... s d, v d -> ... s v", out, self.o_proj)
+        
+        
