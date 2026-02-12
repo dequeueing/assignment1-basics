@@ -54,3 +54,44 @@
 
 Parameter: 自动注册的 Tensor，优化器会更新它。
 ModuleList vs list: 前者能让 PyTorch 追踪到内部的参数。
+
+
+# New: einsum notation within torch.einsum
+
+`torch.einsum` 提供了一种声明式的方式来表示张量收缩（contraction）。
+
+### 核心规则
+1. **字母与维度**：方程字符串中的每个字母代表一个轴。
+2. **求和规则**：
+   * 在输入中重复出现的字母，而在输出中消失的，会被求和（Sum reduction）。
+   * 出现在输出中的字母将被保留。
+3. **省略号 `...`**：表示“所有其他维度”，常用于处理 Batch 维度而不关心其具体数量。
+
+### 示例速查
+*   **求和**: `torch.einsum('i->', x)` (所有元素相加)
+*   **矩阵乘法**: `torch.einsum('ij,jk->ik', A, B)`
+*   **逐元素相乘**: `torch.einsum('ij,ij->ij', A, B)`
+*   **转置**: `torch.einsum('ij->ji', A)`
+*   **批量矩阵乘法**: `torch.einsum('bij,bjk->bik', A, B)`
+*   **计算 Trace**: `torch.einsum('ii->', A)`
+*   **向量外积**: `torch.einsum('i,j->ij', x, y)`
+
+
+
+# New: einops.rearrange
+
+`einops` 是一个不仅限于 PyTorch 的库，它提供了一种非常直观且易读的方式来重塑（reshape）张量。
+
+### 核心理念
+通过**语义化**的描述来定义形状转换，而不是靠头脑计算维度的 index。
+
+### 常见操作示例
+*   **重塑 (Reshape)**: `rearrange(x, 'b (h d) -> b h d', h=8)` (将隐层维度拆分为多头)
+*   **合并 (Flatten)**: `rearrange(x, 'b h d -> b (h d)')` (多头合并回隐层)
+*   **转置/置放 (Permute)**: `rearrange(x, 'b s h d -> b h s d')` (Transformer 中常用的重排)
+*   **池化 (Pooling)**: `rearrange(x, 'b (s 2) d -> b s d')` (步长为2的降采样)
+*   **图像切片 (Image to Patches)**: `rearrange(img, 'b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1=8, p2=8)` (Vision Transformer 的核心操作)
+
+### 为什么用 einops 而不是 torch.view/transpose？
+1.  **自文档化**：代码里明确写了 `b h s d`，读代码的人一眼就能看出维度含义。
+2.  **安全性**：如果输入的维度与你定义的模式不匹配，它会报错，而不是像 `view` 那样强行转换导致逻辑错误。
