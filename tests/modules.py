@@ -328,3 +328,43 @@ class MultiheadAttention(torch.nn.Module):
         return torch.einsum("... s d, v d -> ... s v", out, self.o_proj)
         
         
+class TransformerBlock(torch.nn.Module):
+    def __init__(self, d_model, num_heads, d_ff, max_seq_len, theta, device=None, dtype=None):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        
+        # Multi-head self-attention with RoPE
+        self.attention_mh = MultiheadAttention(d_model, num_heads, theta, max_seq_len, device, dtype)
+        
+        # Feed-forward network using SwiGLU
+        self.ffn = SwiGLU(d_model, d_ff, device, dtype)
+        
+        # Layer normalization (pre-norm style)
+        self.ln1 = RMSNorm(d_model, device=device, dtype=dtype)  # Before attention
+        self.ln2 = RMSNorm(d_model, device=device, dtype=dtype)  # Before FFN
+    
+
+    def forward(self, x, token_positions=None):
+        """
+        Pre-norm Transformer block with residual connections.
+        
+        Args:
+            x: Input tensor of shape (..., seq_len, d_model)
+            token_positions: Optional token positions for RoPE
+            
+        Returns:
+            Output tensor of same shape as input
+        """
+        # Self-attention with residual connection
+        # x + attention(norm(x))
+        attn_out = self.attention_mh(self.ln1(x), token_positions=token_positions)
+        x = x + attn_out
+        
+        # Feed-forward with residual connection
+        # x + ffn(norm(x))
+        ffn_out = self.ffn(self.ln2(x))
+        x = x + ffn_out
+        
+        return x

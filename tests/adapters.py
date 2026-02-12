@@ -345,8 +345,34 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
-
+    from .modules import TransformerBlock
+    
+    # Create TransformerBlock with the provided parameters
+    block = TransformerBlock(d_model, num_heads, d_ff, max_seq_len, theta)
+    
+    # Map the weights to the correct state dict keys for our implementation
+    state_dict_to_load = {
+        # Attention weights
+        "attention_mh.q_proj": weights["attn.q_proj.weight"],
+        "attention_mh.k_proj": weights["attn.k_proj.weight"],
+        "attention_mh.v_proj": weights["attn.v_proj.weight"],
+        "attention_mh.o_proj": weights["attn.output_proj.weight"],
+        
+        # Feed-forward network weights
+        "ffn.w1": weights["ffn.w1.weight"],
+        "ffn.w2": weights["ffn.w2.weight"],
+        "ffn.w3": weights["ffn.w3.weight"],
+        
+        # Layer normalization weights
+        "ln1.gain": weights["ln1.weight"],
+        "ln2.gain": weights["ln2.weight"],
+    }
+    
+    # Load the weights
+    block.load_state_dict(state_dict_to_load, strict=False)  # Use strict=False to ignore RoPE weights
+    
+    # Forward pass
+    return block(in_features)
 
 def run_transformer_lm(
     vocab_size: int,
