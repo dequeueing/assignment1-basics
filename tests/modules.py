@@ -207,14 +207,11 @@ class Attention(torch.nn.Module):
         # softmax 
         sfm_QK = self.softmax(QK, dim=-1)
         
-        print("\nsfm size: ", sfm_QK.shape
-              , "\nV size: ", V.shape)
-        
         # multiply V
         return torch.einsum("... a l, ... l v->...av", sfm_QK, V)
 
 class MultiheadAttention(torch.nn.Module):
-    def __init__(self,d_model, num_heads, theta=None, device=None, dtype=None):
+    def __init__(self,d_model, num_heads, theta=None, max_seq_len=None, device=None, dtype=None):
         super().__init__()
         self.d_model = d_model
         self.theta = theta
@@ -228,8 +225,16 @@ class MultiheadAttention(torch.nn.Module):
         
         self.attention = Attention()
         
+        # Initialize RoPE if theta is provided
+        if self.theta is not None:
+            if max_seq_len is None:
+                raise ValueError("max_seq_len must be provided when using RoPE (theta is not None)")
+            self.rope = RotaryPositionalEmbedding(theta=theta, d_k=self.d_k, max_seq_len=max_seq_len, device=device)
+        else:
+            self.rope = None
         
-    def forward(self, x:torch.Tensor): 
+        
+    def forward(self, x:torch.Tensor, token_positions:torch.Tensor=None): 
         # get sequence length from x 
         seq_len = x.shape[-2]
         
@@ -252,8 +257,62 @@ class MultiheadAttention(torch.nn.Module):
         
         # apply rope if not none
         if self.theta:
-            # TODO: apply rope
-            pass
+            # Generate default token positions if not provided
+            if token_positions is None:
+                token_positions = torch.arange(seq_len, device=x.device)
+                # Add batch dimensions to match x's shape
+                for _ in range(len(x.shape) - 2):
+                    token_positions = token_positions.unsqueeze(0)
+            
+            # Apply RoPE to queries and keys (but not values)
+            # Current q, k shape: ... num_heads seq_len d_k
+            # RoPE expects shape: ... seq_len d_k and token_positions: ... seq_len
+            # We apply RoPE independently to each head, but all heads share the same positions
+            
+            # Get original shape for later reconstruction
+            original_shape = q.shape  # ... num_heads seq_len d_k
+            num_heads = original_shape[-3]
+            seq_len_dim = original_shape[-2]
+            d_k = original_shape[-1]
+            
+            # Flatten all dimensions before num_heads into a single batch dimension
+            # q shape: ... num_heads seq_len d_k -> batch num_heads seq_len d_k
+            # where batch = product of all dimensions before num_heads
+            batch_size = 1
+            for dim_size in original_shape[:-3]:
+                batch_size *= dim_size
+            
+            # Reshape: ... h s d -> (batch, h, s, d)
+            q_reshaped = q.reshape(batch_size, num_heads, seq_len_dim, d_k)
+            k_reshaped = k.reshape(batch_size, num_heads, seq_len_dim, d_k)
+            
+            # Flatten batch and heads: (batch, h, s, d) -> (batch*h, s, d)
+            q_flat = q_reshaped.reshape(batch_size * num_heads, seq_len_dim, d_k)
+            k_flat = k_reshaped.reshape(batch_size * num_heads, seq_len_dim, d_k)
+            
+            # Expand token_positions to match
+            # token_positions can have shape: seq_len or batch seq_len or 1 seq_len
+            # Need: (batch * num_heads) seq_len
+            # Each head in the same batch uses the same token positions
+            if token_positions.dim() == 1:
+                # Shape: seq_len -> 1 seq_len
+                token_positions = token_positions.unsqueeze(0)
+            
+            # Now token_positions shape is: batch_in seq_len
+            # Need to expand to batch_size if batch_in < batch_size
+            if token_positions.shape[0] < batch_size:
+                token_positions = token_positions.expand(batch_size, -1)
+            
+            # Now expand for all heads: batch seq_len -> (batch * num_heads) seq_len
+            token_positions_flat = token_positions.unsqueeze(1).expand(batch_size, num_heads, seq_len_dim).reshape(batch_size * num_heads, seq_len_dim)
+            
+            # Apply RoPE
+            q_flat = self.rope(q_flat, token_positions_flat)
+            k_flat = self.rope(k_flat, token_positions_flat)
+            
+            # Reshape back to original shape
+            q = q_flat.reshape(original_shape)
+            k = k_flat.reshape(original_shape)
         
         # get the causal mask 
         causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=x.device)).bool()
