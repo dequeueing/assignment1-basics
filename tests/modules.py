@@ -156,3 +156,24 @@ class RotaryPositionalEmbedding(torch.nn.Module):
         rotated_x = rearrange([rotated_even, rotated_odd], 'two ... seq_len pairs -> ... seq_len (pairs two)')
         
         return rotated_x
+    
+    
+class Softmax(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+    def forward(self, x:torch.Tensor, dim:int):
+        # get the maximum value for the targeted dimension
+        maximum = torch.max(x, dim=dim, keepdim=True).values
+        
+        # minus the maximum value
+        x = x - maximum
+        
+        # calculate exp for each element 
+        x = torch.exp(x)
+        
+        # get the sum
+        exp_sum = torch.sum(x, dim=dim, keepdim=True)
+        
+        return x / exp_sum
+        
