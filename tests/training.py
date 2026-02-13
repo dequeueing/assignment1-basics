@@ -127,6 +127,31 @@ def cosine_annealing_schedule(it: int,
         return min_learning_rate
 
 
+def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
+    """Implement gradient clipping to limit the L2 norm of combined gradients to max_l2_norm.
+    
+    Args:
+        parameters: Collection of trainable parameters
+        max_l2_norm: Maximum L2 norm
+    """
+    eps = 1e-6  # PyTorch default value
+    
+    # Collect all parameter gradients and compute L2 norm
+    total_norm = 0.0
+    for p in parameters:
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)  # L2 norm
+            total_norm += param_norm.item() ** 2
+    
+    total_norm = math.sqrt(total_norm)
+    
+    # If total norm exceeds maximum value, perform clipping
+    if total_norm > max_l2_norm:
+        clip_coef = max_l2_norm / (total_norm + eps)
+        for p in parameters:
+            if p.grad is not None:
+                p.grad.data.mul_(clip_coef)
+
                 
 if __name__ == "__main__":
     for lr in [1, 10, 100]:
