@@ -546,7 +546,9 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    from .training import DataLoader
+    dl = DataLoader(batch_size,context_length,device)
+    return dl.process_data(dataset)
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:

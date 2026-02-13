@@ -5,6 +5,8 @@ from collections.abc import Callable, Iterable
 from jaxtyping import Float, Int
 from typing import Optional
 import math
+import numpy
+import numpy.typing as npt
 
 
 
@@ -151,6 +153,36 @@ def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: flo
         for p in parameters:
             if p.grad is not None:
                 p.grad.data.mul_(clip_coef)
+ 
+                
+class DataLoader():
+    def __init__(self, batch_size, context_length, device):
+        self.batch_size = batch_size
+        self.context_length = context_length
+        self.device = device
+        
+    def process_data(self, dataset: npt.NDArray):
+        # randomly generate starting index
+        # note that high is exclusive
+        starting_index = numpy.random.randint(low=0,high=len(dataset) - self.context_length, size=(self.batch_size,))
+                
+        # get the slice
+        offsets = numpy.arange(0, self.context_length)
+        indices = starting_index[:, None] + offsets
+        
+        # debug print the size of starting index
+
+        sampled_input = dataset[indices]
+        
+        indices += 1
+        targets = dataset[indices]
+        
+        sampled_input = torch.from_numpy(sampled_input).to(self.device)
+        targets = torch.from_numpy(targets).to(self.device)
+        return (sampled_input, targets)
+        
+        
+        
 
                 
 if __name__ == "__main__":
