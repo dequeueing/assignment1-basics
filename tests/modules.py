@@ -35,7 +35,7 @@ class Embedding(torch.nn.Module):
         
         
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        indices = torch.LongTensor(token_ids)
+        indices = token_ids.long()
         return self.weight[indices]
 
 class RMSNorm(torch.nn.Module):

@@ -63,7 +63,7 @@ def run_embedding(
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
 
-    from .modules import Embedding
+    from tests.modules import Embedding
     embedding_layer = Embedding(vocab_size, d_model)
     
     # load weight 
